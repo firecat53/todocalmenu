@@ -1,5 +1,5 @@
 {
-  description = "Todotxtmenu";
+  description = "Todocalmenu";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs";

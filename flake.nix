@@ -36,7 +36,7 @@
       commonPackages,
     }: {
       default = pkgs.mkShell {
-        packages = commonPackages ++ [pkgs.pandoc];
+        packages = commonPackages;
         shellHook = ''
         '';
       };

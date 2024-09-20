@@ -52,14 +52,16 @@
         name = "todocalmenu";
         pname = "todocalmenu";
         inherit version;
+        rev = "${version}";
         src = ./.;
         vendorHash = "sha256-DOJTdOyKEHZ2bZS1UisCWqNIuSDqrEUgd+jPjImTmgI=";
         proxyVendor = true;
-        meta = {
+        meta = with pkgs.lib; {
           description = "Dmenu/Rofi launcher based management of iCalendar Todo lists";
           homepage = "https://github.com/firecat53/todocalmenu";
-          license = pkgs.lib.licenses.mit;
-          maintainers = ["firecat53"];
+          license = licenses.mit;
+          maintainers = with maintainers; [firecat53];
+          platforms = systems;
         };
       };
     });

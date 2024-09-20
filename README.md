@@ -12,7 +12,7 @@ Tasks](https://github.com/nextcloud/tasks),
 
 ### Installation
 
-* `go get github.com/firecat53/todocalmenu.go` OR [download binary](https://github.com/firecat53/todocalmenu/releases)
+* `go install github.com/firecat53/todocalmenu@latest` OR [download binary](https://github.com/firecat53/todocalmenu/releases)
 
 ### Usage
 

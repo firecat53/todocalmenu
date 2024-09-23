@@ -9,7 +9,6 @@
     self,
     nixpkgs,
   }: let
-    version = "0.5.2";
     systems = ["x86_64-linux" "i686-linux" "aarch64-linux"];
     forAllSystems = f:
       nixpkgs.lib.genAttrs systems (system:
@@ -51,8 +50,6 @@
       default = pkgs.buildGoModule {
         name = "todocalmenu";
         pname = "todocalmenu";
-        inherit version;
-        rev = "${version}";
         src = ./.;
         vendorHash = "sha256-DOJTdOyKEHZ2bZS1UisCWqNIuSDqrEUgd+jPjImTmgI=";
         proxyVendor = true;
@@ -60,7 +57,7 @@
           description = "Dmenu/Rofi launcher based management of iCalendar Todo lists";
           homepage = "https://github.com/firecat53/todocalmenu";
           license = licenses.mit;
-          maintainers = with maintainers; [firecat53];
+          maintainers = ["firecat53"];
           platforms = systems;
         };
       };

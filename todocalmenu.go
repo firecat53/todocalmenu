@@ -820,7 +820,7 @@ func deleteTodo(todo *Todo, todoList *TodoList) bool {
 	// Delete the corresponding .ics file
 	filePath := filepath.Join(*todoPtr, todo.UID+".ics")
 	err := os.Remove(filePath)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		log.Printf("Error deleting file %s: %v", filePath, err)
 		return false
 	}

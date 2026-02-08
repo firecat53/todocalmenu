@@ -148,6 +148,10 @@ func testTodo6(t *testing.T, todo *Todo) {
 	if !todo.StartDate.Equal(expectedStart) {
 		t.Errorf("Expected start date %v, got %v", expectedStart, todo.StartDate)
 	}
+	// Verify RRULE is loaded
+	if todo.RRULE != "FREQ=WEEKLY;INTERVAL=2;BYDAY=TU" {
+		t.Errorf("Expected RRULE 'FREQ=WEEKLY;INTERVAL=2;BYDAY=TU', got '%s'", todo.RRULE)
+	}
 }
 
 func containsCategory(categories []string, category string) bool {
@@ -521,6 +525,109 @@ func TestParseTimeInput(t *testing.T) {
 			}
 			if pt.minute != tt.wantMin {
 				t.Errorf("minute = %d, want %d", pt.minute, tt.wantMin)
+			}
+		})
+	}
+}
+
+func TestCalculateNextOccurrence(t *testing.T) {
+	tests := []struct {
+		name        string
+		todo        *Todo
+		expectOK    bool
+		checkResult func(t *testing.T, result time.Time)
+	}{
+		{
+			name: "No RRULE",
+			todo: &Todo{
+				Summary: "Non-recurring task",
+				DueDate: time.Now().AddDate(0, 0, 1),
+			},
+			expectOK: false,
+		},
+		{
+			name: "Daily recurrence",
+			todo: &Todo{
+				Summary: "Daily task",
+				DueDate: time.Now().AddDate(0, 0, -1), // Yesterday
+				RRULE:   "FREQ=DAILY",
+			},
+			expectOK: true,
+			checkResult: func(t *testing.T, result time.Time) {
+				// Should be today or later
+				if result.Before(time.Now().Truncate(24 * time.Hour)) {
+					t.Errorf("Next occurrence %v should be today or later", result)
+				}
+			},
+		},
+		{
+			name: "Weekly recurrence on Tuesday",
+			todo: &Todo{
+				Summary: "Weekly Tuesday task",
+				DueDate: time.Date(2024, 10, 1, 9, 0, 0, 0, time.UTC), // A Tuesday
+				RRULE:   "FREQ=WEEKLY;BYDAY=TU",
+			},
+			expectOK: true,
+			checkResult: func(t *testing.T, result time.Time) {
+				// Should be a Tuesday
+				if result.Weekday() != time.Tuesday {
+					t.Errorf("Next occurrence %v should be a Tuesday, got %v", result, result.Weekday())
+				}
+				// Should be in the future
+				if result.Before(time.Now()) {
+					t.Errorf("Next occurrence %v should be in the future", result)
+				}
+			},
+		},
+		{
+			name: "Monthly recurrence",
+			todo: &Todo{
+				Summary: "Monthly task",
+				DueDate: time.Now().AddDate(0, -1, 0), // Last month
+				RRULE:   "FREQ=MONTHLY",
+			},
+			expectOK: true,
+			checkResult: func(t *testing.T, result time.Time) {
+				// Should be in the future
+				if result.Before(time.Now()) {
+					t.Errorf("Next occurrence %v should be in the future", result)
+				}
+			},
+		},
+		{
+			name: "Biweekly recurrence",
+			todo: &Todo{
+				Summary:   "Trash/yard waste",
+				DueDate:   time.Date(2024, 10, 1, 9, 0, 0, 0, time.UTC), // Oct 1, 2024 was a Tuesday
+				StartDate: time.Date(2024, 10, 1, 9, 0, 0, 0, time.UTC),
+				RRULE:     "FREQ=WEEKLY;INTERVAL=2;BYDAY=TU",
+			},
+			expectOK: true,
+			checkResult: func(t *testing.T, result time.Time) {
+				// Should be a Tuesday (in UTC, the source timezone)
+				resultUTC := result.UTC()
+				if resultUTC.Weekday() != time.Tuesday {
+					t.Errorf("Next occurrence %v (UTC: %v) should be a Tuesday, got %v", result, resultUTC, resultUTC.Weekday())
+				}
+				// Should be in the future
+				if result.Before(time.Now()) {
+					t.Errorf("Next occurrence %v should be in the future", result)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := calculateNextOccurrence(tt.todo)
+
+			if ok != tt.expectOK {
+				t.Errorf("calculateNextOccurrence() ok = %v, want %v", ok, tt.expectOK)
+				return
+			}
+
+			if tt.expectOK && tt.checkResult != nil {
+				tt.checkResult(t, result)
 			}
 		})
 	}

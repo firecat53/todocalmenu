@@ -37,6 +37,20 @@ Tasks](https://github.com/nextcloud/tasks),
         todocalmenu -todo /home/user/todos -opts
             "-fn SourceCodePro-Regular:12 -b -l 10 -nf blue -nb black"
 
+### Recurring Tasks
+
+Recurring tasks are indicated with `[R]` in the task list. When completing a
+recurring task, you can choose to:
+
+- **Complete (reschedule to next)** - Reschedules the task to the next
+  occurrence based on its recurrence rule
+- **Complete permanently** - Marks the task as completed and removes the
+  recurrence
+
+**TODO**: Creating and editing recurrence rules is not yet supported. Use
+another calendar app (e.g., Tasks.org, Nextcloud Tasks) to set up recurring
+tasks.
+
 ### Testing
 
 * `go test`

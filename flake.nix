@@ -51,7 +51,7 @@
         name = "todocalmenu";
         pname = "todocalmenu";
         src = ./.;
-        vendorHash = "sha256-IL8qjwxczc1q2vHKtNm5VUWdNxEKJTB8gvnvO5kgkPY=";
+        vendorHash = "sha256-MVLYDrC/cVHcWI1awKj+wRTxq1MBPfg5Xii6YfgGfas=";
         proxyVendor = true;
         meta = with pkgs.lib; {
           description = "Dmenu/Rofi launcher based management of iCalendar Todo lists";

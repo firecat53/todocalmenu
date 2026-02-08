@@ -15,6 +15,7 @@ import (
 	"time"
 
 	ics "github.com/arran4/golang-ical"
+	"github.com/teambition/rrule-go"
 )
 
 var hideCreatedDatePtr = flag.Bool("hide-created-date", false, "Hide created date in the list view")
@@ -34,7 +35,8 @@ type Todo struct {
 	DueDate     time.Time
 	Priority    int
 	StartDate   time.Time
-	Modified    bool // New field to track changes in the current session
+	RRULE       string // Recurrence rule (RFC 5545)
+	Modified    bool   // New field to track changes in the current session
 }
 
 type TodoList struct {
@@ -148,6 +150,9 @@ func convertVTodoToTodo(vtodo *ics.VTodo) *Todo {
 	}
 	if start := vtodo.GetProperty(ics.ComponentPropertyDtStart); start != nil {
 		todo.StartDate = parseDateTime(start.Value)
+	}
+	if rruleProp := vtodo.GetProperty(ics.ComponentPropertyRrule); rruleProp != nil {
+		todo.RRULE = rruleProp.Value
 	}
 
 	return todo
@@ -269,6 +274,13 @@ func saveTodos(todoList *TodoList, dirPath string) error {
 			setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyCategories, strings.Join(todo.Categories, ","))
 		} else {
 			removeProperty(vtodo, ics.ComponentPropertyCategories)
+		}
+
+		// Handle RRULE
+		if todo.RRULE != "" {
+			setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyRrule, todo.RRULE)
+		} else {
+			removeProperty(vtodo, ics.ComponentPropertyRrule)
 		}
 
 		// Preserve CREATED if it exists, otherwise set it
@@ -409,6 +421,41 @@ func hasTimeComponent(t time.Time) bool {
 	return t.Hour() != 0 || t.Minute() != 0 || t.Second() != 0
 }
 
+// calculateNextOccurrence calculates the next occurrence based on RRULE
+// Returns the next occurrence time and whether it was successfully calculated
+func calculateNextOccurrence(todo *Todo) (time.Time, bool) {
+	if todo.RRULE == "" {
+		return time.Time{}, false
+	}
+
+	// Build the RRULE string with DTSTART
+	var dtstart time.Time
+	if !todo.DueDate.IsZero() {
+		dtstart = todo.DueDate
+	} else if !todo.StartDate.IsZero() {
+		dtstart = todo.StartDate
+	} else {
+		dtstart = time.Now()
+	}
+
+	// Parse the RRULE with DTSTART
+	rruleStr := fmt.Sprintf("DTSTART:%s\nRRULE:%s", dtstart.UTC().Format("20060102T150405Z"), todo.RRULE)
+	ruleSet, err := rrule.StrToRRuleSet(rruleStr)
+	if err != nil {
+		log.Printf("Error parsing RRULE: %v", err)
+		return time.Time{}, false
+	}
+
+	// Get the next occurrence after now
+	next := ruleSet.After(time.Now(), false)
+	if next.IsZero() {
+		// No more occurrences (e.g., COUNT or UNTIL limit reached)
+		return time.Time{}, false
+	}
+
+	return next.Local(), true
+}
+
 func editItem(todo *Todo, todoList *TodoList, isNew bool) {
 	originalTodo := *todo // Make a copy of the original todo
 	for edit := true; edit; {
@@ -424,6 +471,8 @@ func editItem(todo *Todo, todoList *TodoList, isNew bool) {
 			comp = ""
 		} else if todo.Status == "COMPLETED" {
 			comp = "Restore item (uncomplete)\n\n"
+		} else if todo.RRULE != "" {
+			comp = "Complete (reschedule to next)\nComplete permanently\n\n"
 		} else {
 			comp = "Complete item\n\n"
 		}
@@ -663,6 +712,35 @@ func editItem(todo *Todo, todoList *TodoList, isNew bool) {
 			todo.Status = "COMPLETED"
 			todo.LastMod = time.Now()
 			todo.Modified = true // Set the modified flag
+		case strings.HasPrefix(out, "Complete (reschedule"):
+			// Recurring task: reschedule to next occurrence
+			nextDue, ok := calculateNextOccurrence(todo)
+			if ok {
+				// Calculate the offset between old due and start dates
+				var offset time.Duration
+				if !todo.DueDate.IsZero() && !todo.StartDate.IsZero() {
+					offset = todo.DueDate.Sub(todo.StartDate)
+				}
+				// Update due date to next occurrence
+				todo.DueDate = nextDue
+				// Update start date if it was set (maintain the same offset)
+				if !todo.StartDate.IsZero() {
+					todo.StartDate = nextDue.Add(-offset)
+				}
+				todo.LastMod = time.Now()
+				todo.Modified = true
+			} else {
+				// No more occurrences, treat as permanent completion
+				todo.Status = "COMPLETED"
+				todo.LastMod = time.Now()
+				todo.Modified = true
+			}
+		case strings.HasPrefix(out, "Complete permanently"):
+			// Permanently complete recurring task
+			todo.Status = "COMPLETED"
+			todo.RRULE = "" // Remove recurrence
+			todo.LastMod = time.Now()
+			todo.Modified = true
 		case strings.HasPrefix(out, "Restore item"):
 			todo.Status = "NEEDS-ACTION"
 			todo.LastMod = time.Now()
@@ -925,6 +1003,11 @@ func createMenu(todoList *TodoList, showCompleted bool) (*strings.Builder, map[s
 		if !todo.DueDate.IsZero() {
 			localDueDate := todo.DueDate.In(time.Local)
 			fmt.Fprintf(&displayStr, " due:%s", localDueDate.Format("2006-01-02"))
+		}
+
+		// Recurring indicator
+		if todo.RRULE != "" {
+			displayStr.WriteString(" [R]")
 		}
 
 		displayList.WriteString(displayStr.String() + "\n")

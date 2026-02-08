@@ -1,3 +1,4 @@
-todocalmenu
-.envrc
+.claude/
 .direnv/
+.envrc
+todocalmenu

@@ -299,3 +299,229 @@ func TestEditTodo(t *testing.T) {
 		t.Error("Expected Modified flag to be set to true")
 	}
 }
+
+func TestGenerateDateOptions(t *testing.T) {
+	// Test start date options (isDueDate = false)
+	startOptions := generateDateOptions(false)
+
+	expectedStartItems := []string{"Clear", "Today", "+1 day", "+7 days", "+14 days", "Custom..."}
+	for _, item := range expectedStartItems {
+		if !strings.Contains(startOptions, item) {
+			t.Errorf("Start date options should contain '%s'", item)
+		}
+	}
+
+	// Start dates should NOT have due-date-specific options
+	unexpectedStartItems := []string{"+30 days", "End of week", "End of month"}
+	for _, item := range unexpectedStartItems {
+		if strings.Contains(startOptions, item) {
+			t.Errorf("Start date options should NOT contain '%s'", item)
+		}
+	}
+
+	// Test due date options (isDueDate = true)
+	dueOptions := generateDateOptions(true)
+
+	expectedDueItems := []string{"Clear", "Today", "+1 day", "+7 days", "+14 days", "+30 days", "End of week", "End of month", "Custom..."}
+	for _, item := range expectedDueItems {
+		if !strings.Contains(dueOptions, item) {
+			t.Errorf("Due date options should contain '%s'", item)
+		}
+	}
+}
+
+func TestParseDateSelection(t *testing.T) {
+	tests := []struct {
+		name       string
+		selection  string
+		wantClear  bool
+		wantCustom bool
+		wantDate   string // empty string means don't check date
+	}{
+		{"Clear option", "Clear", true, false, ""},
+		{"Custom option", "Custom...", false, true, ""},
+		{"Today option", "Today (2025-02-06)", false, false, "2025-02-06"},
+		{"+1 day option", "+1 day (2025-02-07)", false, false, "2025-02-07"},
+		{"End of week", "End of week (2025-02-07)", false, false, "2025-02-07"},
+		{"End of month", "End of month (2025-02-28)", false, false, "2025-02-28"},
+		{"Invalid format", "Something without parens", false, true, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			date, isClear, isCustom := parseDateSelection(tt.selection)
+
+			if isClear != tt.wantClear {
+				t.Errorf("isClear = %v, want %v", isClear, tt.wantClear)
+			}
+			if isCustom != tt.wantCustom {
+				t.Errorf("isCustom = %v, want %v", isCustom, tt.wantCustom)
+			}
+			if tt.wantDate != "" {
+				gotDate := date.Format("2006-01-02")
+				if gotDate != tt.wantDate {
+					t.Errorf("date = %v, want %v", gotDate, tt.wantDate)
+				}
+			}
+		})
+	}
+}
+
+func TestIsDateInPast(t *testing.T) {
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+
+	tests := []struct {
+		name     string
+		date     time.Time
+		wantPast bool
+	}{
+		{"Yesterday", today.AddDate(0, 0, -1), true},
+		{"Today at midnight", today, false},
+		{"Today at noon", today.Add(12 * time.Hour), false},
+		{"Tomorrow", today.AddDate(0, 0, 1), false},
+		{"Last week", today.AddDate(0, 0, -7), true},
+		{"Next week", today.AddDate(0, 0, 7), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isDateInPast(tt.date)
+			if got != tt.wantPast {
+				t.Errorf("isDateInPast(%v) = %v, want %v", tt.date, got, tt.wantPast)
+			}
+		})
+	}
+}
+
+func TestIsToday(t *testing.T) {
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+
+	tests := []struct {
+		name    string
+		date    time.Time
+		want    bool
+	}{
+		{"Today at midnight", today, true},
+		{"Today at noon", today.Add(12 * time.Hour), true},
+		{"Today at 23:59", today.Add(23*time.Hour + 59*time.Minute), true},
+		{"Yesterday", today.AddDate(0, 0, -1), false},
+		{"Tomorrow", today.AddDate(0, 0, 1), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isToday(tt.date)
+			if got != tt.want {
+				t.Errorf("isToday(%v) = %v, want %v", tt.date, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEndOfWeekCalculation(t *testing.T) {
+	// Verify that "End of week" in generateDateOptions always falls on a Friday
+	options := generateDateOptions(true)
+
+	// Find the "End of week" line
+	lines := strings.Split(options, "\n")
+	var endOfWeekLine string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "End of week") {
+			endOfWeekLine = line
+			break
+		}
+	}
+
+	if endOfWeekLine == "" {
+		t.Fatal("Could not find 'End of week' option")
+	}
+
+	// Parse the date from the option
+	date, _, _ := parseDateSelection(endOfWeekLine)
+	if date.IsZero() {
+		t.Fatal("Could not parse date from 'End of week' option")
+	}
+
+	// Verify it's a Friday
+	if date.Weekday() != time.Friday {
+		t.Errorf("End of week date %v is %v, expected Friday", date.Format("2006-01-02"), date.Weekday())
+	}
+
+	// Verify it's in the future (or today if today is Friday)
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	if date.Before(today) {
+		t.Errorf("End of week date %v should not be before today %v", date.Format("2006-01-02"), today.Format("2006-01-02"))
+	}
+}
+
+func TestHasTimeComponent(t *testing.T) {
+	tests := []struct {
+		name string
+		time time.Time
+		want bool
+	}{
+		{"Midnight", time.Date(2025, 1, 1, 0, 0, 0, 0, time.Local), false},
+		{"Has hour", time.Date(2025, 1, 1, 1, 0, 0, 0, time.Local), true},
+		{"Has minute", time.Date(2025, 1, 1, 0, 30, 0, 0, time.Local), true},
+		{"Has second", time.Date(2025, 1, 1, 0, 0, 30, 0, time.Local), true},
+		{"Full time", time.Date(2025, 1, 1, 14, 30, 45, 0, time.Local), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasTimeComponent(tt.time)
+			if got != tt.want {
+				t.Errorf("hasTimeComponent(%v) = %v, want %v", tt.time, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseTimeInput(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantHour  int
+		wantMin   int
+		wantError bool
+	}{
+		{"Colon format", "14:30", 14, 30, false},
+		{"Colon format single digits", "9:05", 9, 5, false},
+		{"No colon format", "1430", 14, 30, false},
+		{"Midnight", "00:00", 0, 0, false},
+		{"End of day", "23:59", 23, 59, false},
+		{"Invalid hour", "25:00", 0, 0, true},
+		{"Invalid minute", "12:60", 0, 0, true},
+		{"Negative hour", "-1:00", 0, 0, true},
+		{"Invalid format", "abc", 0, 0, true},
+		{"Empty string", "", 0, 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pt, err := parseTimeInput(tt.input)
+
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("expected error, got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+
+			if pt.hour != tt.wantHour {
+				t.Errorf("hour = %d, want %d", pt.hour, tt.wantHour)
+			}
+			if pt.minute != tt.wantMin {
+				t.Errorf("minute = %d, want %d", pt.minute, tt.wantMin)
+			}
+		})
+	}
+}

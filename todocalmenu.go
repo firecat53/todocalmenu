@@ -63,7 +63,7 @@ func main() {
 			viewCompletedItems(todoList)
 		case out != "":
 			t := todoList.Todos[m[out]]
-			editItem(t, todoList)
+			editItem(t, todoList, false)
 		default:
 			edit = false
 		}
@@ -237,16 +237,24 @@ func saveTodos(todoList *TodoList, dirPath string) error {
 		setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyStatus, todo.Status)
 		setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyLastModified, todo.LastMod.UTC().Format("20060102T150405Z"))
 
-		// Convert DTSTART to UTC and save
+		// Convert DTSTART to UTC and save (date-only if no time set)
 		if !todo.StartDate.IsZero() {
-			setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDtStart, todo.StartDate.UTC().Format("20060102T150405Z"))
+			if hasTimeComponent(todo.StartDate) {
+				setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDtStart, todo.StartDate.UTC().Format("20060102T150405Z"))
+			} else {
+				setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDtStart, todo.StartDate.Format("20060102"))
+			}
 		} else {
 			removeProperty(vtodo, ics.ComponentPropertyDtStart)
 		}
 
-		// Convert DUE to UTC and save
+		// Convert DUE to UTC and save (date-only if no time set)
 		if !todo.DueDate.IsZero() {
-			setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDue, todo.DueDate.UTC().Format("20060102T150405Z"))
+			if hasTimeComponent(todo.DueDate) {
+				setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDue, todo.DueDate.UTC().Format("20060102T150405Z"))
+			} else {
+				setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDue, todo.DueDate.Format("20060102"))
+			}
 		} else {
 			removeProperty(vtodo, ics.ComponentPropertyDue)
 		}
@@ -318,7 +326,7 @@ func addItem(todoList *TodoList) {
 	}
 
 	if todo.Summary != "" {
-		editItem(todo, todoList)
+		editItem(todo, todoList, true)
 		if todo.Summary != "" && todo.Modified {
 			todo.LastMod = time.Now() // Update LastMod when adding
 			todoList.Todos = append(todoList.Todos, todo)
@@ -326,9 +334,83 @@ func addItem(todoList *TodoList) {
 	}
 }
 
-func editItem(todo *Todo, todoList *TodoList) {
-	originalTodo := *todo   // Make a copy of the original todo
-	isNew := todo.UID == "" // Check if this is a new item
+func generateDateOptions(isDueDate bool) string {
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	plus1 := now.AddDate(0, 0, 1).Format("2006-01-02")
+	plus7 := now.AddDate(0, 0, 7).Format("2006-01-02")
+	plus14 := now.AddDate(0, 0, 14).Format("2006-01-02")
+
+	var options []string
+	if !isDueDate {
+		options = append(options, "Same as Due Date")
+	}
+	options = append(options, fmt.Sprintf("Today (%s)", today))
+	options = append(options, fmt.Sprintf("+1 day (%s)", plus1))
+	options = append(options, fmt.Sprintf("+7 days (%s)", plus7))
+	options = append(options, fmt.Sprintf("+14 days (%s)", plus14))
+
+	if isDueDate {
+		plus30 := now.AddDate(0, 0, 30).Format("2006-01-02")
+		options = append(options, fmt.Sprintf("+30 days (%s)", plus30))
+
+		// End of week (Friday)
+		daysUntilFriday := (5 - int(now.Weekday()) + 7) % 7
+		if daysUntilFriday == 0 {
+			daysUntilFriday = 7 // If today is Friday, use next Friday
+		}
+		endOfWeek := now.AddDate(0, 0, daysUntilFriday).Format("2006-01-02")
+		options = append(options, fmt.Sprintf("End of week (%s)", endOfWeek))
+
+		// End of month
+		endOfMonth := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, time.Local).Format("2006-01-02")
+		options = append(options, fmt.Sprintf("End of month (%s)", endOfMonth))
+	}
+
+	options = append(options, "Custom...")
+	options = append(options, "Clear")
+	return strings.Join(options, "\n")
+}
+
+func parseDateSelection(selection string) (date time.Time, isClear bool, isCustom bool) {
+	if selection == "Clear" {
+		return time.Time{}, true, false
+	}
+	if selection == "Custom..." {
+		return time.Time{}, false, true
+	}
+
+	// Extract date from format "Label (YYYY-MM-DD)"
+	start := strings.LastIndex(selection, "(")
+	end := strings.LastIndex(selection, ")")
+	if start != -1 && end != -1 && end > start {
+		dateStr := selection[start+1 : end]
+		parsed, err := time.ParseInLocation("2006-01-02", dateStr, time.Local)
+		if err == nil {
+			return parsed, false, false
+		}
+	}
+	return time.Time{}, false, true // Fallback to custom if parsing fails
+}
+
+func isDateInPast(date time.Time) bool {
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	dateOnly := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.Local)
+	return dateOnly.Before(today)
+}
+
+func isToday(date time.Time) bool {
+	now := time.Now()
+	return date.Year() == now.Year() && date.Month() == now.Month() && date.Day() == now.Day()
+}
+
+func hasTimeComponent(t time.Time) bool {
+	return t.Hour() != 0 || t.Minute() != 0 || t.Second() != 0
+}
+
+func editItem(todo *Todo, todoList *TodoList, isNew bool) {
+	originalTodo := *todo // Make a copy of the original todo
 	for edit := true; edit; {
 		var displayList strings.Builder
 		var tdd string
@@ -351,12 +433,13 @@ func editItem(todo *Todo, todoList *TodoList) {
 				"Priority: %d\n"+
 				"Categories (comma separated): %s\n"+
 				"Due date yyyy-mm-dd: %s\n"+
+				"Due time hh:mm: %s\n"+
 				"Start date yyyy-mm-dd: %s\n"+
 				"Start time hh:mm: %s\n"+
 				"Description: %s\n\n"+
 				"Delete item",
 			comp, todo.Summary, todo.Priority, strings.Join(todo.Categories, ","),
-			tdd, formatDate(todo.StartDate), formatTime(todo.StartDate), todo.Description,
+			tdd, formatTime(todo.DueDate), formatDate(todo.StartDate), formatTime(todo.StartDate), todo.Description,
 		)
 		out, e := display(displayList.String(), todo.Summary)
 		// Cancel new item if ESC is hit without saving
@@ -415,29 +498,160 @@ func editItem(todo *Todo, todoList *TodoList) {
 				todo.Modified = true
 			}
 		case strings.HasPrefix(out, "Due date"):
-			d, e := display(tdd, "Due Date (yyyy-mm-dd):")
-			if e == nil {
-				if d == "" {
-					todo.DueDate = time.Time{} // Clear the due date
-				} else {
+			for {
+				options := generateDateOptions(true)
+				selection, e := display(options, "Due Date:")
+				if e != nil {
+					break
+				}
+				date, isClear, isCustom := parseDateSelection(selection)
+				if isClear {
+					todo.DueDate = time.Time{}
+					todo.Modified = true
+					break
+				}
+				if isCustom {
+					d, e := display(tdd, "Due Date (yyyy-mm-dd):")
+					if e != nil {
+						break
+					}
+					if d == "" {
+						todo.DueDate = time.Time{}
+						todo.Modified = true
+						break
+					}
 					td, err := time.ParseInLocation("2006-01-02", d, time.Local)
 					if err != nil {
 						display("", "Bad date format. Should be yyyy-mm-dd.")
-					} else {
-						todo.DueDate = td
-						todo.Modified = true
+						continue
+					}
+					date = td
+				}
+				if isNew && isDateInPast(date) {
+					display("", "Cannot set due date in the past for new items.")
+					continue
+				}
+				// Preserve existing time if any
+				if !todo.DueDate.IsZero() {
+					date = time.Date(date.Year(), date.Month(), date.Day(),
+						todo.DueDate.Hour(), todo.DueDate.Minute(), 0, 0, time.Local)
+				}
+				todo.DueDate = date
+				todo.Modified = true
+				break
+			}
+		case strings.HasPrefix(out, "Due time"):
+			for {
+				t, e := display(formatTime(todo.DueDate), "Due Time (hh:mm or hhmm):")
+				if e != nil {
+					break
+				}
+				if t == "" {
+					break
+				}
+				newTime, err := parseTimeInput(t)
+				if err != nil {
+					display("", "Bad time format. Should be hh:mm or hhmm.")
+					continue
+				}
+				// Validate for new items: time must be >= now
+				if isNew {
+					now := time.Now()
+					// Use existing date or today if not set
+					baseDate := todo.DueDate
+					if baseDate.IsZero() {
+						baseDate = now
+					}
+					proposedDateTime := time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
+						newTime.hour, newTime.minute, 0, 0, time.Local)
+					if proposedDateTime.Before(now) {
+						display("", "Cannot set due time in the past for new items.")
+						continue
 					}
 				}
+				updateDueTimeFromParsed(todo, newTime)
+				break
 			}
 		case strings.HasPrefix(out, "Start date"):
-			d, e := display(formatDate(todo.StartDate), "Start Date (yyyy-mm-dd):")
-			if e == nil {
-				updateStartDate(todo, d)
+			for {
+				options := generateDateOptions(false)
+				selection, e := display(options, "Start Date:")
+				if e != nil {
+					break
+				}
+				// Handle "Same as Due Date" option
+				if selection == "Same as Due Date" {
+					todo.StartDate = todo.DueDate // Copies the due date (including time), or clears if due date is not set
+					todo.Modified = true
+					break
+				}
+				date, isClear, isCustom := parseDateSelection(selection)
+				if isClear {
+					todo.StartDate = time.Time{}
+					todo.Modified = true
+					break
+				}
+				if isCustom {
+					d, e := display(formatDate(todo.StartDate), "Start Date (yyyy-mm-dd):")
+					if e != nil {
+						break
+					}
+					if d == "" {
+						todo.StartDate = time.Time{}
+						todo.Modified = true
+						break
+					}
+					td, err := time.ParseInLocation("2006-01-02", d, time.Local)
+					if err != nil {
+						display("", "Bad date format. Should be yyyy-mm-dd.")
+						continue
+					}
+					date = td
+				}
+				if isNew && isDateInPast(date) {
+					display("", "Cannot set start date in the past for new items.")
+					continue
+				}
+				// Preserve existing time if any
+				if !todo.StartDate.IsZero() {
+					date = time.Date(date.Year(), date.Month(), date.Day(),
+						todo.StartDate.Hour(), todo.StartDate.Minute(), 0, 0, time.Local)
+				}
+				todo.StartDate = date
+				todo.Modified = true
+				break
 			}
 		case strings.HasPrefix(out, "Start time"):
-			t, e := display(formatTime(todo.StartDate), "Start Time (hh:mm or hhmm):")
-			if e == nil {
-				updateStartTime(todo, t)
+			for {
+				t, e := display(formatTime(todo.StartDate), "Start Time (hh:mm or hhmm):")
+				if e != nil {
+					break
+				}
+				if t == "" {
+					break
+				}
+				newTime, err := parseTimeInput(t)
+				if err != nil {
+					display("", "Bad time format. Should be hh:mm or hhmm.")
+					continue
+				}
+				// Validate for new items: time must be >= now
+				if isNew {
+					now := time.Now()
+					// Use existing date or today if not set
+					baseDate := todo.StartDate
+					if baseDate.IsZero() {
+						baseDate = now
+					}
+					proposedDateTime := time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
+						newTime.hour, newTime.minute, 0, 0, time.Local)
+					if proposedDateTime.Before(now) {
+						display("", "Cannot set start time in the past for new items.")
+						continue
+					}
+				}
+				updateStartTimeFromParsed(todo, newTime)
+				break
 			}
 		case strings.HasPrefix(out, "Description"):
 			desc, e := display(todo.Description, "Description:")
@@ -465,27 +679,12 @@ func editItem(todo *Todo, todoList *TodoList) {
 	}
 }
 
-func updateStartDate(todo *Todo, dateStr string) {
-	if dateStr == "" {
-		todo.StartDate = time.Time{}
-	} else {
-		date, err := time.ParseInLocation("2006-01-02", dateStr, time.Local)
-		if err == nil {
-			if !todo.StartDate.IsZero() {
-				todo.StartDate = time.Date(date.Year(), date.Month(), date.Day(),
-					todo.StartDate.Hour(), todo.StartDate.Minute(), 0, 0, time.Local)
-			} else {
-				todo.StartDate = date
-			}
-			todo.Modified = true
-		}
-	}
+type parsedTime struct {
+	hour   int
+	minute int
 }
 
-func updateStartTime(todo *Todo, timeStr string) {
-	if timeStr == "" {
-		return
-	}
+func parseTimeInput(timeStr string) (parsedTime, error) {
 	var hour, min int
 	var err error
 	if strings.Contains(timeStr, ":") {
@@ -493,14 +692,28 @@ func updateStartTime(todo *Todo, timeStr string) {
 	} else {
 		_, err = fmt.Sscanf(timeStr, "%02d%02d", &hour, &min)
 	}
-	if err == nil && hour >= 0 && hour < 24 && min >= 0 && min < 60 {
-		if todo.StartDate.IsZero() {
-			todo.StartDate = time.Now().Local()
-		}
-		todo.StartDate = time.Date(todo.StartDate.Year(), todo.StartDate.Month(), todo.StartDate.Day(),
-			hour, min, 0, 0, time.Local)
-		todo.Modified = true
+	if err != nil || hour < 0 || hour >= 24 || min < 0 || min >= 60 {
+		return parsedTime{}, errors.New("invalid time")
 	}
+	return parsedTime{hour: hour, minute: min}, nil
+}
+
+func updateStartTimeFromParsed(todo *Todo, pt parsedTime) {
+	if todo.StartDate.IsZero() {
+		todo.StartDate = time.Now().Local()
+	}
+	todo.StartDate = time.Date(todo.StartDate.Year(), todo.StartDate.Month(), todo.StartDate.Day(),
+		pt.hour, pt.minute, 0, 0, time.Local)
+	todo.Modified = true
+}
+
+func updateDueTimeFromParsed(todo *Todo, pt parsedTime) {
+	if todo.DueDate.IsZero() {
+		todo.DueDate = time.Now().Local()
+	}
+	todo.DueDate = time.Date(todo.DueDate.Year(), todo.DueDate.Month(), todo.DueDate.Day(),
+		pt.hour, pt.minute, 0, 0, time.Local)
+	todo.Modified = true
 }
 
 func formatDate(t time.Time) string {
@@ -511,7 +724,7 @@ func formatDate(t time.Time) string {
 }
 
 func formatTime(t time.Time) string {
-	if t.IsZero() {
+	if t.IsZero() || !hasTimeComponent(t) {
 		return ""
 	}
 	return t.Format("15:04")
@@ -573,7 +786,7 @@ func viewCompletedItems(todoList *TodoList) {
 			return
 		} else if out != "" {
 			t := todoList.Todos[m[out]]
-			editItem(t, todoList)
+			editItem(t, todoList, false)
 		} else {
 			return
 		}

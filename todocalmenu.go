@@ -247,7 +247,7 @@ func saveTodos(todoList *TodoList, dirPath string) error {
 			if hasTimeComponent(todo.StartDate) {
 				setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDtStart, todo.StartDate.UTC().Format("20060102T150405Z"))
 			} else {
-				setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDtStart, todo.StartDate.Format("20060102"))
+				vtodo.SetProperty(ics.ComponentPropertyDtStart, todo.StartDate.Format("20060102"), ics.WithValue("DATE"))
 			}
 		} else {
 			removeProperty(vtodo, ics.ComponentPropertyDtStart)
@@ -258,7 +258,7 @@ func saveTodos(todoList *TodoList, dirPath string) error {
 			if hasTimeComponent(todo.DueDate) {
 				setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDue, todo.DueDate.UTC().Format("20060102T150405Z"))
 			} else {
-				setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyDue, todo.DueDate.Format("20060102"))
+				vtodo.SetProperty(ics.ComponentPropertyDue, todo.DueDate.Format("20060102"), ics.WithValue("DATE"))
 			}
 		} else {
 			removeProperty(vtodo, ics.ComponentPropertyDue)

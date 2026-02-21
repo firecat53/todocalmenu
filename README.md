@@ -37,6 +37,22 @@ Tasks](https://github.com/nextcloud/tasks),
         todocalmenu -todo /home/user/todos -opts
             "-fn SourceCodePro-Regular:12 -b -l 10 -nf blue -nb black"
 
+### Display Format
+
+    (priority) created-date summary @category +listname due:due-date [R]
+
+- `@category` - categories assigned to the item (one per category)
+- `+listname` - list name (only shown in multi-list mode)
+
+### Multiple Lists
+
+If the `-todo` directory contains `.ics` files directly, todocalmenu operates in
+single-list mode. If it contains subdirectories with `.ics` files (e.g. from
+CalDAV sync), each subdirectory is treated as a separate list and items are
+tagged with `+listname` in the display. A `displayname` file in a subdirectory
+(common with CalDAV) is used as the list name if present, otherwise the
+directory name is used.
+
 ### Recurring Tasks
 
 Recurring tasks are indicated with `[R]` in the task list. When completing a

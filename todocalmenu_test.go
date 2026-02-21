@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,7 +11,7 @@ import (
 
 func TestLoadTodos(t *testing.T) {
 	testDir := "testdata"
-	todoList, err := loadTodos(testDir)
+	todoList, err := loadTodos(testDir, "")
 	if err != nil {
 		t.Fatalf("Failed to load todos: %v", err)
 	}
@@ -166,7 +167,7 @@ func containsCategory(categories []string, category string) bool {
 func TestSaveTodos(t *testing.T) {
 	// Load existing todos
 	testDir := "testdata"
-	todoList, err := loadTodos(testDir)
+	todoList, err := loadTodos(testDir, "")
 	if err != nil {
 		t.Fatalf("Failed to load todos: %v", err)
 	}
@@ -175,10 +176,6 @@ func TestSaveTodos(t *testing.T) {
 		t.Fatalf("No todos found in testdata directory")
 	}
 
-	// Modify the first todo
-	todoList.Todos[0].Summary = "Modified " + todoList.Todos[0].Summary
-	todoList.Todos[0].Modified = true
-
 	// Create a temporary directory for saving
 	tempDir, err := os.MkdirTemp("", "test_save_todos")
 	if err != nil {
@@ -186,14 +183,19 @@ func TestSaveTodos(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
+	// Modify the first todo and set its ListDir to tempDir
+	todoList.Todos[0].Summary = "Modified " + todoList.Todos[0].Summary
+	todoList.Todos[0].Modified = true
+	todoList.Todos[0].ListDir = tempDir
+
 	// Save todos
-	err = saveTodos(todoList, tempDir)
+	err = saveTodos(todoList)
 	if err != nil {
 		t.Fatalf("Failed to save todos: %v", err)
 	}
 
 	// Load saved todos
-	savedTodoList, err := loadTodos(tempDir)
+	savedTodoList, err := loadTodos(tempDir, "")
 	if err != nil {
 		t.Fatalf("Failed to load saved todos: %v", err)
 	}
@@ -206,7 +208,7 @@ func TestSaveTodos(t *testing.T) {
 
 func TestCreateMenu(t *testing.T) {
 	testDir := "testdata"
-	todoList, err := loadTodos(testDir)
+	todoList, err := loadTodos(testDir, "")
 	if err != nil {
 		t.Fatalf("Failed to load todos: %v", err)
 	}
@@ -631,4 +633,299 @@ func TestCalculateNextOccurrence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDirContainsVTodos(t *testing.T) {
+	// testdata/ contains .ics files with VTODOs
+	if !dirContainsVTodos("testdata") {
+		t.Error("Expected testdata/ to contain VTODOs")
+	}
+
+	// testdata/multi/ contains only subdirectories, no .ics files directly
+	if dirContainsVTodos("testdata/multi") {
+		t.Error("Expected testdata/multi/ to not contain VTODOs directly")
+	}
+
+	// testdata/multi/work/ contains .ics files with VTODOs
+	if !dirContainsVTodos("testdata/multi/work") {
+		t.Error("Expected testdata/multi/work/ to contain VTODOs")
+	}
+
+	// Non-existent directory
+	if dirContainsVTodos("nonexistent") {
+		t.Error("Expected nonexistent directory to return false")
+	}
+}
+
+func TestDiscoverLists(t *testing.T) {
+	t.Run("Single-list mode (ics files in root)", func(t *testing.T) {
+		names, err := discoverLists("testdata")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if names != nil {
+			t.Errorf("Expected nil for single-list mode, got %v", names)
+		}
+	})
+
+	t.Run("Multi-list mode (subdirectories with todos)", func(t *testing.T) {
+		names, err := discoverLists("testdata/multi")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(names) != 2 {
+			t.Fatalf("Expected 2 lists, got %d: %v", len(names), names)
+		}
+		// Should be sorted
+		if names[0] != "personal" || names[1] != "work" {
+			t.Errorf("Expected [personal, work], got %v", names)
+		}
+		// work has a displayname file, personal does not
+		if dn, ok := listDisplayNames["work"]; !ok || dn != "Work Tasks" {
+			t.Errorf("Expected displayname 'Work Tasks' for work, got %q (ok=%v)", dn, ok)
+		}
+		if _, ok := listDisplayNames["personal"]; ok {
+			t.Error("Expected no displayname entry for personal")
+		}
+	})
+
+	t.Run("Empty directory (single-list mode)", func(t *testing.T) {
+		tempDir, err := os.MkdirTemp("", "test_discover_empty")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		names, err := discoverLists(tempDir)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if names != nil {
+			t.Errorf("Expected nil for empty directory, got %v", names)
+		}
+	})
+
+	t.Run("Non-existent directory", func(t *testing.T) {
+		_, err := discoverLists("nonexistent")
+		if err == nil {
+			t.Error("Expected error for non-existent directory")
+		}
+	})
+}
+
+func TestLoadAllTodos(t *testing.T) {
+	t.Run("Single-list mode", func(t *testing.T) {
+		// Reset global state
+		listNames = nil
+
+		todoList, err := loadAllTodos("testdata")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(todoList.Todos) != 6 {
+			t.Errorf("Expected 6 todos, got %d", len(todoList.Todos))
+		}
+		// In single-list mode, ListName should be empty
+		for _, todo := range todoList.Todos {
+			if todo.ListName != "" {
+				t.Errorf("Expected empty ListName in single-list mode, got %q", todo.ListName)
+			}
+			if todo.ListDir != "testdata" {
+				t.Errorf("Expected ListDir 'testdata', got %q", todo.ListDir)
+			}
+		}
+	})
+
+	t.Run("Multi-list mode", func(t *testing.T) {
+		// Set global state for multi-list
+		listNames = []string{"personal", "work"}
+		listDisplayNames = map[string]string{"work": "Work Tasks"}
+
+		todoList, err := loadAllTodos("testdata/multi")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if len(todoList.Todos) != 3 {
+			t.Errorf("Expected 3 todos, got %d", len(todoList.Todos))
+		}
+
+		// Verify display name is used for work (has displayname file)
+		workTodo := findTodoByUID(todoList, "work-task1")
+		if workTodo == nil {
+			t.Fatal("work-task1 not found")
+		}
+		if workTodo.ListName != "Work Tasks" {
+			t.Errorf("Expected ListName 'Work Tasks' (from displayname file), got %q", workTodo.ListName)
+		}
+		if workTodo.ListDir != filepath.Join("testdata/multi", "work") {
+			t.Errorf("Expected ListDir 'testdata/multi/work', got %q", workTodo.ListDir)
+		}
+
+		// Verify dir name is used for personal (no displayname file)
+		personalTodo := findTodoByUID(todoList, "personal-task1")
+		if personalTodo == nil {
+			t.Fatal("personal-task1 not found")
+		}
+		if personalTodo.ListName != "personal" {
+			t.Errorf("Expected ListName 'personal' (dir name fallback), got %q", personalTodo.ListName)
+		}
+
+		// Reset global state
+		listNames = nil
+		listDisplayNames = nil
+	})
+}
+
+func TestCreateMenuMultiList(t *testing.T) {
+	todoList := &TodoList{
+		Todos: []*Todo{
+			{
+				UID:      "t1",
+				Summary:  "Work task",
+				ListName: "Work Tasks", // display name from displayname file
+				Created:  time.Now(),
+				Status:   "NEEDS-ACTION",
+			},
+			{
+				UID:        "t2",
+				Summary:    "Personal task",
+				ListName:   "personal", // dir name fallback
+				Categories: []string{"home"},
+				Created:    time.Now(),
+				Status:     "NEEDS-ACTION",
+			},
+			{
+				UID:      "t3",
+				Summary:  "Single-list task",
+				ListName: "", // single-list mode
+				Created:  time.Now(),
+				Status:   "NEEDS-ACTION",
+			},
+		},
+	}
+
+	displayList, _ := createMenu(todoList, false)
+	menuStr := displayList.String()
+
+	// Multi-list items should show +listname (display name when available)
+	if !strings.Contains(menuStr, "+Work Tasks") {
+		t.Error("Expected menu to contain '+Work Tasks'")
+	}
+	if !strings.Contains(menuStr, "+personal") {
+		t.Error("Expected menu to contain '+personal'")
+	}
+
+	// Single-list items should not show +listname
+	lines := strings.Split(menuStr, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "Single-list task") {
+			if strings.Contains(line, "+") {
+				t.Errorf("Single-list task should not have +listname, got: %s", line)
+			}
+		}
+	}
+}
+
+func TestSaveTodosMultiList(t *testing.T) {
+	// Create temp directories for two lists
+	tempDir, err := os.MkdirTemp("", "test_save_multi")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	workDir := filepath.Join(tempDir, "work")
+	personalDir := filepath.Join(tempDir, "personal")
+	os.MkdirAll(workDir, 0755)
+	os.MkdirAll(personalDir, 0755)
+
+	todoList := &TodoList{
+		Todos: []*Todo{
+			{
+				UID:      "save-work-1",
+				Summary:  "Work task",
+				ListName: "work",
+				ListDir:  workDir,
+				Created:  time.Now(),
+				LastMod:  time.Now(),
+				Status:   "NEEDS-ACTION",
+				Modified: true,
+			},
+			{
+				UID:      "save-personal-1",
+				Summary:  "Personal task",
+				ListName: "personal",
+				ListDir:  personalDir,
+				Created:  time.Now(),
+				LastMod:  time.Now(),
+				Status:   "NEEDS-ACTION",
+				Modified: true,
+			},
+		},
+	}
+
+	err = saveTodos(todoList)
+	if err != nil {
+		t.Fatalf("Failed to save todos: %v", err)
+	}
+
+	// Verify work todo was saved to work directory
+	workTodos, err := loadTodos(workDir, "work")
+	if err != nil {
+		t.Fatalf("Failed to load work todos: %v", err)
+	}
+	if len(workTodos.Todos) != 1 {
+		t.Errorf("Expected 1 work todo, got %d", len(workTodos.Todos))
+	}
+	if workTodos.Todos[0].Summary != "Work task" {
+		t.Errorf("Expected 'Work task', got %q", workTodos.Todos[0].Summary)
+	}
+
+	// Verify personal todo was saved to personal directory
+	personalTodos, err := loadTodos(personalDir, "personal")
+	if err != nil {
+		t.Fatalf("Failed to load personal todos: %v", err)
+	}
+	if len(personalTodos.Todos) != 1 {
+		t.Errorf("Expected 1 personal todo, got %d", len(personalTodos.Todos))
+	}
+	if personalTodos.Todos[0].Summary != "Personal task" {
+		t.Errorf("Expected 'Personal task', got %q", personalTodos.Todos[0].Summary)
+	}
+}
+
+func TestReadDisplayName(t *testing.T) {
+	// Directory with a displayname file
+	dn := readDisplayName("testdata/multi/work")
+	if dn != "Work Tasks" {
+		t.Errorf("Expected 'Work Tasks', got %q", dn)
+	}
+
+	// Directory without a displayname file
+	dn = readDisplayName("testdata/multi/personal")
+	if dn != "" {
+		t.Errorf("Expected empty string, got %q", dn)
+	}
+
+	// Non-existent directory
+	dn = readDisplayName("nonexistent")
+	if dn != "" {
+		t.Errorf("Expected empty string for non-existent dir, got %q", dn)
+	}
+}
+
+func TestListDisplayName(t *testing.T) {
+	// With display name set
+	listDisplayNames = map[string]string{"work": "Work Tasks"}
+	if got := listDisplayName("work"); got != "Work Tasks" {
+		t.Errorf("Expected 'Work Tasks', got %q", got)
+	}
+
+	// Without display name (falls back to dir name)
+	if got := listDisplayName("personal"); got != "personal" {
+		t.Errorf("Expected 'personal', got %q", got)
+	}
+
+	// Reset global state
+	listDisplayNames = nil
 }

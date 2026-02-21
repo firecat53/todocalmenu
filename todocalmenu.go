@@ -37,7 +37,12 @@ type Todo struct {
 	StartDate   time.Time
 	RRULE       string // Recurrence rule (RFC 5545)
 	Modified    bool   // New field to track changes in the current session
+	ListName    string // Subdirectory basename; empty in single-list mode
+	ListDir     string // Full path to the directory containing this todo's .ics file
 }
+
+var listNames []string            // Empty = single-list mode; populated = multi-list mode
+var listDisplayNames map[string]string // Dir name -> display name (from displayname file)
 
 type TodoList struct {
 	Todos []*Todo
@@ -51,7 +56,14 @@ func main() {
 		log.Fatalf("Failed to create todo directory: %v", err)
 	}
 
-	todoList, err := loadTodos(*todoPtr)
+	// Discover lists (multi-list vs single-list mode)
+	var err error
+	listNames, err = discoverLists(*todoPtr)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	todoList, err := loadAllTodos(*todoPtr)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
@@ -70,12 +82,95 @@ func main() {
 			edit = false
 		}
 	}
-	if err := saveTodos(todoList, *todoPtr); err != nil {
+	if err := saveTodos(todoList); err != nil {
 		log.Fatal(err.Error())
 	}
 }
 
-func loadTodos(dirPath string) (*TodoList, error) {
+// dirContainsVTodos checks if a directory contains .ics files with VTODO components.
+func dirContainsVTodos(dirPath string) bool {
+	files, err := os.ReadDir(dirPath)
+	if err != nil {
+		return false
+	}
+	for _, file := range files {
+		if filepath.Ext(file.Name()) != ".ics" {
+			continue
+		}
+		cal, err := loadICSFile(filepath.Join(dirPath, file.Name()))
+		if err != nil {
+			continue
+		}
+		for _, component := range cal.Components {
+			if _, ok := component.(*ics.VTodo); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// readDisplayName reads a "displayname" file from dirPath and returns its
+// contents as the list display name. Returns empty string if file doesn't exist.
+func readDisplayName(dirPath string) string {
+	data, err := os.ReadFile(filepath.Join(dirPath, "displayname"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// listDisplayName returns the display name for a directory name,
+// falling back to the directory name itself.
+func listDisplayName(dirName string) string {
+	if dn, ok := listDisplayNames[dirName]; ok {
+		return dn
+	}
+	return dirName
+}
+
+// discoverLists scans rootDir for todo list subdirectories.
+// Returns nil if rootDir contains .ics files directly (single-list mode)
+// or if nothing is found (empty directory for new users).
+// Also populates listDisplayNames from displayname files in each subdirectory.
+func discoverLists(rootDir string) ([]string, error) {
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		return nil, fmt.Errorf("error reading directory: %v", err)
+	}
+
+	// If any .ics files exist directly, use single-list mode
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".ics" {
+			return nil, nil
+		}
+	}
+
+	// Scan subdirectories for VTODO-containing .ics files
+	var names []string
+	listDisplayNames = make(map[string]string)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		subDir := filepath.Join(rootDir, entry.Name())
+		if dirContainsVTodos(subDir) {
+			names = append(names, entry.Name())
+			if dn := readDisplayName(subDir); dn != "" {
+				listDisplayNames[entry.Name()] = dn
+			}
+		}
+	}
+
+	if len(names) == 0 {
+		return nil, nil
+	}
+
+	sort.Strings(names)
+	return names, nil
+}
+
+func loadTodos(dirPath string, listName string) (*TodoList, error) {
 	todoList := &TodoList{}
 	files, err := os.ReadDir(dirPath)
 	if err != nil {
@@ -96,7 +191,10 @@ func loadTodos(dirPath string) (*TodoList, error) {
 
 		for _, component := range cal.Components {
 			if todo, ok := component.(*ics.VTodo); ok {
-				todoList.Todos = append(todoList.Todos, convertVTodoToTodo(todo))
+				t := convertVTodoToTodo(todo)
+				t.ListName = listName
+				t.ListDir = dirPath
+				todoList.Todos = append(todoList.Todos, t)
 			}
 		}
 	}
@@ -106,6 +204,31 @@ func loadTodos(dirPath string) (*TodoList, error) {
 	}
 
 	return todoList, nil
+}
+
+func loadAllTodos(rootDir string) (*TodoList, error) {
+	if len(listNames) == 0 {
+		// Single-list mode
+		return loadTodos(rootDir, "")
+	}
+
+	// Multi-list mode
+	combined := &TodoList{}
+	for _, name := range listNames {
+		subDir := filepath.Join(rootDir, name)
+		tl, err := loadTodos(subDir, listDisplayName(name))
+		if err != nil {
+			log.Printf("Error loading list %s: %v", name, err)
+			continue
+		}
+		combined.Todos = append(combined.Todos, tl.Todos...)
+	}
+
+	if len(combined.Todos) == 0 {
+		log.Printf("Warning: No todos found in any list under %s", rootDir)
+	}
+
+	return combined, nil
 }
 
 func loadICSFile(filePath string) (*ics.Calendar, error) {
@@ -203,22 +326,22 @@ func parseDateTime(value string) time.Time {
 	return t
 }
 
-func saveTodos(todoList *TodoList, dirPath string) error {
+func saveTodos(todoList *TodoList) error {
 	for _, todo := range todoList.Todos {
 		if !todo.Modified {
 			continue // Skip unmodified todos
 		}
 
 		fileName := todo.UID + ".ics"
-		filePath := filepath.Join(dirPath, fileName)
+		filePath := filepath.Join(todo.ListDir, fileName)
 
 		// Read existing calendar if file exists
 		var cal *ics.Calendar
-		var err error
 		if _, err := os.Stat(filePath); err == nil {
-			cal, err = loadICSFile(filePath)
-			if err != nil {
-				return fmt.Errorf("error loading existing file %s: %v", filePath, err)
+			var loadErr error
+			cal, loadErr = loadICSFile(filePath)
+			if loadErr != nil {
+				return fmt.Errorf("error loading existing file %s: %v", filePath, loadErr)
 			}
 		} else {
 			cal = ics.NewCalendar()
@@ -288,14 +411,14 @@ func saveTodos(todoList *TodoList, dirPath string) error {
 			setPropertyIfNotEmpty(vtodo, ics.ComponentPropertyCreated, todo.Created.UTC().Format("20060102T150405Z"))
 		}
 
-		file, err := os.Create(filePath)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-
-		if err := cal.SerializeTo(file); err != nil {
+		var buf bytes.Buffer
+		if err := cal.SerializeTo(&buf); err != nil {
 			return fmt.Errorf("error saving todo %s: %v", todo.UID, err)
+		}
+		// Fix golang-ical escaping commas in CATEGORIES values
+		output := fixCategoriesEscaping(buf.String())
+		if err := os.WriteFile(filePath, []byte(output), 0644); err != nil {
+			return err
 		}
 
 		todo.Modified = false // Reset the modified flag after saving
@@ -322,6 +445,16 @@ func removeProperty(vtodo *ics.VTodo, property ics.ComponentProperty) {
 	}
 }
 
+func fixCategoriesEscaping(icsData string) string {
+	lines := strings.SplitAfter(icsData, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "CATEGORIES:") {
+			lines[i] = strings.ReplaceAll(line, `\,`, ",")
+		}
+	}
+	return strings.Join(lines, "")
+}
+
 func addItem(todoList *TodoList) {
 	// Add new todo item
 	todo := &Todo{
@@ -337,12 +470,54 @@ func addItem(todoList *TodoList) {
 		return
 	}
 
-	if todo.Summary != "" {
-		editItem(todo, todoList, true)
-		if todo.Summary != "" && todo.Modified {
-			todo.LastMod = time.Now() // Update LastMod when adding
-			todoList.Todos = append(todoList.Todos, todo)
+	if todo.Summary == "" {
+		return
+	}
+
+	// Set ListDir based on mode
+	if len(listNames) > 0 {
+		// Multi-list mode: prompt for list selection
+		// Build display name list and reverse mapping
+		var displayOptions []string
+		displayToDirName := make(map[string]string)
+		for _, dirName := range listNames {
+			dn := listDisplayName(dirName)
+			displayOptions = append(displayOptions, dn)
+			displayToDirName[dn] = dirName
 		}
+		options := strings.Join(displayOptions, "\n") + "\nNew List"
+		selection, e := display(options, "Select List:")
+		if e != nil {
+			return
+		}
+		if selection == "New List" {
+			newName, e := display("", "List Name:")
+			if e != nil || newName == "" {
+				return
+			}
+			newDir := filepath.Join(*todoPtr, newName)
+			if err := os.MkdirAll(newDir, 0755); err != nil {
+				log.Printf("Error creating list directory: %v", err)
+				return
+			}
+			listNames = append(listNames, newName)
+			sort.Strings(listNames)
+			todo.ListName = newName
+			todo.ListDir = newDir
+		} else {
+			dirName := displayToDirName[selection]
+			todo.ListName = selection
+			todo.ListDir = filepath.Join(*todoPtr, dirName)
+		}
+	} else {
+		// Single-list mode
+		todo.ListDir = *todoPtr
+	}
+
+	editItem(todo, todoList, true)
+	if todo.Summary != "" && todo.Modified {
+		todo.LastMod = time.Now() // Update LastMod when adding
+		todoList.Todos = append(todoList.Todos, todo)
 	}
 }
 
@@ -818,7 +993,7 @@ func deleteTodo(todo *Todo, todoList *TodoList) bool {
 	}
 
 	// Delete the corresponding .ics file
-	filePath := filepath.Join(*todoPtr, todo.UID+".ics")
+	filePath := filepath.Join(todo.ListDir, todo.UID+".ics")
 	err := os.Remove(filePath)
 	if err != nil && !os.IsNotExist(err) {
 		log.Printf("Error deleting file %s: %v", filePath, err)
@@ -997,6 +1172,11 @@ func createMenu(todoList *TodoList, showCompleted bool) (*strings.Builder, map[s
 			for _, category := range todo.Categories {
 				fmt.Fprintf(&displayStr, " @%s", category)
 			}
+		}
+
+		// List name (multi-list mode only)
+		if todo.ListName != "" {
+			fmt.Fprintf(&displayStr, " +%s", todo.ListName)
 		}
 
 		// Due date (convert to local time for display)

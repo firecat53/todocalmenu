@@ -1,5 +1,8 @@
 ## Todocalmenu
 
+> NOTE: Code moved to https://git.firecat53.me/firecat53/todocalmenu. Issues and
+> PRs still accepted here for now. Github repo maintained as a read-only mirror.
+
 A minimal dmenu/rofi launcher (also bemenu, wofi, fuzzel, tofi, yofi, and wmenu) app to view and manage a directory of
 [icalendar](https://icalendar.org/iCalendar-RFC-5545/3-6-2-to-do-component.html)
 todo's. 

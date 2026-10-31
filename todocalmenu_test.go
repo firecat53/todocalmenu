@@ -1033,3 +1033,47 @@ func TestListDisplayName(t *testing.T) {
 	// Reset global state
 	listDisplayNames = nil
 }
+
+// fakeLauncher points -cmd at a script that replies with text on its first call
+// and exits 1 (Esc) after that. Returns the path of its call log.
+func fakeLauncher(t *testing.T, text string) string {
+	t.Helper()
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	script := filepath.Join(dir, "launcher")
+	body := "#!/bin/sh\ncat >/dev/null\necho x >>" + calls + "\n" +
+		"[ \"$(wc -l <" + calls + ")\" -eq 1 ] || exit 1\necho '" + text + "'\n"
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+	orig := *cmdPtr
+	*cmdPtr = script
+	t.Cleanup(func() { *cmdPtr = orig })
+	return calls
+}
+
+func TestViewCompletedItemsUnknownSelection(t *testing.T) {
+	tests := []struct {
+		name  string
+		todos []*Todo
+	}{
+		{"with items", []*Todo{{UID: "t1", Summary: "Done", Status: "COMPLETED", Created: time.Now()}}},
+		{"empty list", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := fakeLauncher(t, "typed text")
+			viewCompletedItems(&TodoList{Todos: tc.todos})
+
+			// Menu shown, typed text ignored, menu shown again, Esc. An
+			// edit menu would add a third call.
+			data, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Count(string(data), "x"); got != 2 {
+				t.Errorf("Expected 2 launcher calls, got %d", got)
+			}
+		})
+	}
+}

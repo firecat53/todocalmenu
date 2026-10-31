@@ -84,8 +84,10 @@ func main() {
 		case strings.HasPrefix(out, switchListPrefix):
 			currentList = selectList(strings.TrimPrefix(out, switchListPrefix))
 		case out != "":
-			t := todoList.Todos[m[out]]
-			editItem(t, todoList, false)
+			// Ignore typed text that doesn't match a menu entry
+			if i, ok := m[out]; ok {
+				editItem(todoList.Todos[i], todoList, false)
+			}
 		default:
 			edit = false
 		}
@@ -1084,8 +1086,10 @@ func viewCompletedItems(todoList *TodoList) {
 			}
 			return
 		} else if out != "" {
-			t := todoList.Todos[m[out]]
-			editItem(t, todoList, false)
+			// Ignore typed text that doesn't match a menu entry
+			if i, ok := m[out]; ok {
+				editItem(todoList.Todos[i], todoList, false)
+			}
 		} else {
 			return
 		}

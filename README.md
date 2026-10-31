@@ -25,6 +25,8 @@ Tasks](https://github.com/nextcloud/tasks),
                 Dmenu command to use (dmenu, rofi, wofi, etc) (default "dmenu")
           -hide-created-date
                 Don't display the created date (default false)
+          -list string
+                List to show on startup, by directory or display name (default "todo")
           -opts string
                 Additional Rofi/Dmenu options (default "")
           -todo string
@@ -42,19 +44,23 @@ Tasks](https://github.com/nextcloud/tasks),
 
 ### Display Format
 
-    (priority) created-date summary @category +listname due:due-date [R]
+    (priority) created-date summary @category due:due-date [R]
 
 - `@category` - categories assigned to the item (one per category)
-- `+listname` - list name (only shown in multi-list mode)
 
 ### Multiple Lists
 
 If the `-todo` directory contains `.ics` files directly, todocalmenu operates in
 single-list mode. If it contains subdirectories with `.ics` files (e.g. from
-CalDAV sync), each subdirectory is treated as a separate list and items are
-tagged with `+listname` in the display. A `displayname` file in a subdirectory
-(common with CalDAV) is used as the list name if present, otherwise the
-directory name is used.
+CalDAV sync), each subdirectory is treated as a separate list. A `displayname`
+file in a subdirectory (common with CalDAV) is used as the list name if present,
+otherwise the directory name is used.
+
+One list is shown at a time, with its name as the menu title. The `todo` list is
+shown by default; use `-list` to start with a different one. If the list isn't
+found, the first list is shown instead. The other lists appear in the menu as
+`Switch to: listname` entries below `View Completed Items`. `Delete All
+Completed` only affects the current list.
 
 ### Recurring Tasks
 

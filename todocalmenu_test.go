@@ -405,9 +405,9 @@ func TestIsToday(t *testing.T) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 
 	tests := []struct {
-		name    string
-		date    time.Time
-		want    bool
+		name string
+		date time.Time
+		want bool
 	}{
 		{"Today at midnight", today, true},
 		{"Today at noon", today.Add(12 * time.Hour), true},
@@ -777,6 +777,15 @@ func TestLoadAllTodos(t *testing.T) {
 }
 
 func TestCreateMenuMultiList(t *testing.T) {
+	listNames = []string{"personal", "shopping", "work"}
+	listDisplayNames = map[string]string{"work": "Work Tasks"}
+	currentList = "Work Tasks"
+	defer func() {
+		listNames = nil
+		listDisplayNames = nil
+		currentList = ""
+	}()
+
 	todoList := &TodoList{
 		Todos: []*Todo{
 			{
@@ -787,7 +796,14 @@ func TestCreateMenuMultiList(t *testing.T) {
 				Status:   "NEEDS-ACTION",
 			},
 			{
-				UID:        "t2",
+				UID:      "t2",
+				Summary:  "Work task done",
+				ListName: "Work Tasks",
+				Created:  time.Now(),
+				Status:   "COMPLETED",
+			},
+			{
+				UID:        "t3",
 				Summary:    "Personal task",
 				ListName:   "personal", // dir name fallback
 				Categories: []string{"home"},
@@ -795,34 +811,122 @@ func TestCreateMenuMultiList(t *testing.T) {
 				Status:     "NEEDS-ACTION",
 			},
 			{
-				UID:      "t3",
-				Summary:  "Single-list task",
-				ListName: "", // single-list mode
+				UID:      "t4",
+				Summary:  "Personal task done",
+				ListName: "personal",
 				Created:  time.Now(),
-				Status:   "NEEDS-ACTION",
+				Status:   "COMPLETED",
 			},
 		},
 	}
 
-	displayList, _ := createMenu(todoList, false)
+	displayList, m := createMenu(todoList, false)
 	menuStr := displayList.String()
 
-	// Multi-list items should show +listname (display name when available)
-	if !strings.Contains(menuStr, "+Work Tasks") {
-		t.Error("Expected menu to contain '+Work Tasks'")
+	// Only the current list's items are shown, with no +listname tag
+	if !strings.Contains(menuStr, "Work task") {
+		t.Error("Expected menu to contain current list's item")
 	}
-	if !strings.Contains(menuStr, "+personal") {
-		t.Error("Expected menu to contain '+personal'")
+	if strings.Contains(menuStr, "Personal task") {
+		t.Error("Expected menu to hide other list's item")
+	}
+	if strings.Contains(menuStr, "+") {
+		t.Errorf("Expected no +listname in menu, got: %s", menuStr)
+	}
+	if len(m) != 1 {
+		t.Errorf("Expected 1 selectable item, got %d", len(m))
 	}
 
-	// Single-list items should not show +listname
-	lines := strings.Split(menuStr, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "Single-list task") {
-			if strings.Contains(line, "+") {
-				t.Errorf("Single-list task should not have +listname, got: %s", line)
-			}
+	// The other lists follow View Completed Items, in order
+	want := "Add Item\nView Completed Items\nSwitch to: personal\nSwitch to: shopping\n"
+	if !strings.HasPrefix(menuStr, want) {
+		t.Errorf("Expected menu to start with %q, got: %q", want, menuStr)
+	}
+
+	// Completed view is limited to the current list and has no switch entries
+	displayList, m = createMenu(todoList, true)
+	menuStr = displayList.String()
+	if !strings.Contains(menuStr, "Work task done") || strings.Contains(menuStr, "Personal task done") {
+		t.Errorf("Expected only current list's completed item, got: %s", menuStr)
+	}
+	if strings.Contains(menuStr, switchListPrefix) {
+		t.Errorf("Expected no switch entries in completed view, got: %s", menuStr)
+	}
+	if len(m) != 1 {
+		t.Errorf("Expected 1 selectable completed item, got %d", len(m))
+	}
+
+	// Switching changes which items are shown
+	currentList = selectList(strings.TrimPrefix("Switch to: personal", switchListPrefix))
+	displayList, _ = createMenu(todoList, false)
+	menuStr = displayList.String()
+	if !strings.Contains(menuStr, "Personal task") || strings.Contains(menuStr, "Work task") {
+		t.Errorf("Expected only personal items after switching, got: %s", menuStr)
+	}
+	if !strings.Contains(menuStr, "Switch to: Work Tasks\n") {
+		t.Errorf("Expected previous list as a switch entry, got: %s", menuStr)
+	}
+}
+
+func TestSelectList(t *testing.T) {
+	listNames = []string{"personal", "todo", "work"}
+	listDisplayNames = map[string]string{"work": "Work Tasks"}
+	defer func() {
+		listNames = nil
+		listDisplayNames = nil
+	}()
+
+	tests := []struct {
+		name     string
+		expected string
+	}{
+		{"todo", "todo"},
+		{"TODO", "todo"},
+		{"work", "Work Tasks"},       // By directory name
+		{"work tasks", "Work Tasks"}, // By display name
+		{"missing", "personal"},      // Falls back to first list
+	}
+	for _, tc := range tests {
+		if got := selectList(tc.name); got != tc.expected {
+			t.Errorf("selectList(%q) = %q, want %q", tc.name, got, tc.expected)
 		}
+	}
+
+	// No todo list: default falls back to first list
+	listNames = []string{"personal", "work"}
+	if got := selectList(defaultList); got != "personal" {
+		t.Errorf("selectList(defaultList) = %q, want %q", got, "personal")
+	}
+
+	// Single-list mode has no current list
+	listNames = nil
+	if got := selectList(defaultList); got != "" {
+		t.Errorf("selectList in single-list mode = %q, want empty", got)
+	}
+}
+
+func TestMenuTitle(t *testing.T) {
+	defer func() { currentList = "" }()
+
+	currentList = "Work Tasks"
+	if got := menuTitle("./testdata/multi"); got != "Work Tasks" {
+		t.Errorf("Expected current list as title, got %q", got)
+	}
+
+	// Single-list mode: displayname file, then directory basename
+	currentList = ""
+	if got := menuTitle("./testdata/multi/work"); got != "Work Tasks" {
+		t.Errorf("Expected displayname as title, got %q", got)
+	}
+	if got := menuTitle("./testdata/multi/personal/"); got != "personal" {
+		t.Errorf("Expected directory basename as title, got %q", got)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := menuTitle("."); got != filepath.Base(wd) {
+		t.Errorf("Expected %q for relative dir, got %q", filepath.Base(wd), got)
 	}
 }
 

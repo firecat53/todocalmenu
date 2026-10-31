@@ -23,6 +23,10 @@ var optsPtr = flag.String("opts", "", "Additional Rofi/Dmenu options")
 var thresholdPtr = flag.Bool("threshold", false, "Hide items before their threshold date")
 var todoPtr = flag.String("todo", "./todos", "Path to todo directory")
 var cmdPtr = flag.String("cmd", "dmenu", "Dmenu command to use (dmenu, rofi, wofi, etc)")
+var listPtr = flag.String("list", defaultList, "List to show on startup, by directory or display name (multi-list mode)")
+
+const defaultList = "todo"
+const switchListPrefix = "Switch to: "
 
 type Todo struct {
 	UID         string
@@ -37,12 +41,13 @@ type Todo struct {
 	StartDate   time.Time
 	RRULE       string // Recurrence rule (RFC 5545)
 	Modified    bool   // New field to track changes in the current session
-	ListName    string // Subdirectory basename; empty in single-list mode
+	ListName    string // Display name of the todo's list; empty in single-list mode
 	ListDir     string // Full path to the directory containing this todo's .ics file
 }
 
-var listNames []string            // Empty = single-list mode; populated = multi-list mode
+var listNames []string                 // Empty = single-list mode; populated = multi-list mode
 var listDisplayNames map[string]string // Dir name -> display name (from displayname file)
+var currentList string                 // Display name of the list being shown; empty in single-list mode
 
 type TodoList struct {
 	Todos []*Todo
@@ -67,14 +72,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
+	currentList = selectList(*listPtr)
 	for edit := true; edit; {
 		displayList, m := createMenu(todoList, false)
-		out, _ := display(displayList.String(), *todoPtr)
+		out, _ := display(displayList.String(), menuTitle(*todoPtr))
 		switch {
 		case out == "Add Item":
 			addItem(todoList)
 		case out == "View Completed Items":
 			viewCompletedItems(todoList)
+		case strings.HasPrefix(out, switchListPrefix):
+			currentList = selectList(strings.TrimPrefix(out, switchListPrefix))
 		case out != "":
 			t := todoList.Todos[m[out]]
 			editItem(t, todoList, false)
@@ -127,6 +135,42 @@ func listDisplayName(dirName string) string {
 		return dn
 	}
 	return dirName
+}
+
+// selectList returns the display name of the list matching name, by directory
+// or display name and ignoring case. Falls back to the first list if there is
+// no match. Returns empty string in single-list mode.
+func selectList(name string) string {
+	if len(listNames) == 0 {
+		return ""
+	}
+	for _, dirName := range listNames {
+		dn := listDisplayName(dirName)
+		if strings.EqualFold(name, dirName) || strings.EqualFold(name, dn) {
+			return dn
+		}
+	}
+	first := listDisplayName(listNames[0])
+	if name != defaultList {
+		log.Printf("List %q not found, showing %q", name, first)
+	}
+	return first
+}
+
+// menuTitle returns the main menu title: the current list or, in single-list
+// mode, the display name or basename of rootDir.
+func menuTitle(rootDir string) string {
+	if currentList != "" {
+		return currentList
+	}
+	if dn := readDisplayName(rootDir); dn != "" {
+		return dn
+	}
+	absDir, err := filepath.Abs(rootDir)
+	if err != nil {
+		return rootDir
+	}
+	return filepath.Base(absDir)
 }
 
 // discoverLists scans rootDir for todo list subdirectories.
@@ -477,12 +521,14 @@ func addItem(todoList *TodoList) {
 	// Set ListDir based on mode
 	if len(listNames) > 0 {
 		// Multi-list mode: prompt for list selection
-		// Build display name list and reverse mapping
-		var displayOptions []string
+		// Build display name list and reverse mapping, current list first
+		displayOptions := []string{currentList}
 		displayToDirName := make(map[string]string)
 		for _, dirName := range listNames {
 			dn := listDisplayName(dirName)
-			displayOptions = append(displayOptions, dn)
+			if dn != currentList {
+				displayOptions = append(displayOptions, dn)
+			}
 			displayToDirName[dn] = dirName
 		}
 		options := strings.Join(displayOptions, "\n") + "\nNew List"
@@ -1015,9 +1061,9 @@ func viewCompletedItems(todoList *TodoList) {
 				var completedTodos []*Todo
 				var remainingTodos []*Todo
 
-				// First, separate completed and non-completed todos
+				// First, separate the current list's completed todos from the rest
 				for _, todo := range todoList.Todos {
-					if todo.Status == "COMPLETED" {
+					if todo.Status == "COMPLETED" && todo.ListName == currentList {
 						completedTodos = append(completedTodos, todo)
 					} else {
 						remainingTodos = append(remainingTodos, todo)
@@ -1098,6 +1144,11 @@ func createMenu(todoList *TodoList, showCompleted bool) (*strings.Builder, map[s
 	if !showCompleted {
 		displayList.WriteString("Add Item\n")
 		displayList.WriteString("View Completed Items\n")
+		for _, dirName := range listNames {
+			if dn := listDisplayName(dirName); dn != currentList {
+				displayList.WriteString(switchListPrefix + dn + "\n")
+			}
+		}
 	} else {
 		displayList.WriteString("Delete All Completed\n")
 	}
@@ -1137,6 +1188,9 @@ func createMenu(todoList *TodoList, showCompleted bool) (*strings.Builder, map[s
 	m := make(map[string]int)
 	now := time.Now()
 	for i, todo := range todoList.Todos {
+		if todo.ListName != currentList {
+			continue
+		}
 		if (todo.Status == "COMPLETED") != showCompleted {
 			continue
 		}
@@ -1172,11 +1226,6 @@ func createMenu(todoList *TodoList, showCompleted bool) (*strings.Builder, map[s
 			for _, category := range todo.Categories {
 				fmt.Fprintf(&displayStr, " @%s", category)
 			}
-		}
-
-		// List name (multi-list mode only)
-		if todo.ListName != "" {
-			fmt.Fprintf(&displayStr, " +%s", todo.ListName)
 		}
 
 		// Due date (convert to local time for display)
